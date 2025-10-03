@@ -59,6 +59,7 @@ export default class GoveeDevice
 
         this.forceStatusUpdate = false;
         this.waitingForStatusUpdate = false;
+        this.waitingForDeviceUpdate = false;
 
         this.shuttingDown = false;
     }
@@ -240,6 +241,8 @@ export default class GoveeDevice
             this.testMode   = false;
             this.hasChanged = hasChanged;
         }
+
+        this.waitingForDeviceUpdate = false;
     }
 
     updateStatus(receivedData)
@@ -342,17 +345,19 @@ export default class GoveeDevice
         {
             this.lastStatus = now;
             this.waitingForStatusUpdate = true;
+
             const statusPacket = { msg: { cmd: "status", data: {} } };
             this.send(statusPacket);
-
-            this.log('Sending status packet');
         }
     }
 
-    requestDeviceData()
+    requestDeviceData(now)
     {
+        if ((now - this.lastDeviceDataCheck) > 30 * 1000) this.waitingForDeviceUpdate = false;
+
         if (!this.waitingForDeviceUpdate)
         {
+            this.lastDeviceDataCheck = now;
             this.waitingForDeviceUpdate = true;
             this.log('Asking device for device data');
             const deviceDataRequestPacket = {msg: { cmd: 'scan', data: {account_topic: 'reserve'} }};
@@ -531,9 +536,7 @@ export default class GoveeDevice
             // Every 60 minutes check if the device data has updated (like firmware changes)
             if (now - this.lastDeviceDataCheck > 60 * 60 * 1000)
             {
-                this.requestDeviceData();
-                this.lastDeviceDataCheck = now;
-                
+                this.requestDeviceData(now);
                 // Not sending more commands to not overload
                 return;
             }
@@ -546,7 +549,7 @@ export default class GoveeDevice
                 {
                     
                     // There's no unique ID, so we need to get that data
-                    this.requestDeviceData();
+                    this.requestDeviceData(now);
                     this.lastRender = now;
                     // Not sending more commands to not overload
                     return
