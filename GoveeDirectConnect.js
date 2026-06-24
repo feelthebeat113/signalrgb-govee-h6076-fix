@@ -4,7 +4,7 @@ import GoveeDevice from "./GoveeDevice.test.js";
 import GoveeController from "./GoveeController.test.js";
 import GoveeDeviceUI from "./GoveeDeviceUI.test.js";
 
-export function Name() { return "Govee Direct Connect"; }
+export function Name() { return "Govee Direct Connect (H6076 Fix)"; }
 export function Version() { return "2.1.4"; }
 export function Type() { return "network"; }
 export function Publisher() { return "RickOfficial"; }
