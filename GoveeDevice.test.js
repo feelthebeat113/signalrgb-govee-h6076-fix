@@ -545,7 +545,7 @@ export default class GoveeDevice
             if (now - this.lastRender > 20 * 1000)
             {
                 // Check if we have the device data already
-                if (this.id == null)
+                if (false) // PATCH(H6076): was (this.id == null) - don't bail when id not yet relayed
                 {
                     
                     // There's no unique ID, so we need to get that data
@@ -582,7 +582,7 @@ export default class GoveeDevice
             }
 
             // If the device is on or we don't have any data yet (we just assume its on)
-            if (this.onOff)
+            if (true) // PATCH(H6076): was (this.onOff) - assume on; lamp replies on fixed 4002 so onOff never relays to this instance
             {
                 try
                 {
