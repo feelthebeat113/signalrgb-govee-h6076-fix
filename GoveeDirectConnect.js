@@ -5,7 +5,7 @@ import GoveeController from "./GoveeController.test.js";
 import GoveeDeviceUI from "./GoveeDeviceUI.test.js";
 
 export function Name() { return "Govee Direct Connect (H6076 Fix)"; }
-export function Version() { return "2.1.4"; }
+export function Version() { return "2.2.0"; }
 export function Type() { return "network"; }
 export function Publisher() { return "RickOfficial"; }
 export function Size() { return [1, 1]; }
@@ -75,7 +75,15 @@ export function DiscoveryService()
         this.lastPollTime = Date.now();
         this.devicesLoaded = false;
 
+        // --- Auto-discovery (tu quet IP theo Govee scan, khong can nhap IP tay) ---
+        this.lastScanTime = 0;
+        this.scanInterval = 20000; // quet lai moi 20s de bat IP doi do DHCP
+
         this.startSocketServer();
+
+        // Nap cac den da luu roi quet ngay khi mo (de bat duoc IP da doi luc dang tat app)
+        this.loadForcedDevices();
+        this.autoScan();
 	}
 
     this.startSocketServer = function()
@@ -154,6 +162,9 @@ export function DiscoveryService()
             {
                 this.loadForcedDevices();
             }
+
+            // Quet dinh ky de tu cap nhat IP khi DHCP doi
+            this.autoScan();
 		}
     }
 
@@ -167,14 +178,22 @@ export function DiscoveryService()
         if (!value) return;
         const ip = this.getIPv4(value.address);
 
+        // Auto-discovery: soi scan reply de tu cap nhat IP. Bao try/catch de KHONG
+        // bao gio lam hong luong relay mau dang chay.
+        try {
+            let parsed = JSON.parse(value.data);
+            if (parsed && parsed.msg && parsed.msg.cmd === 'scan' && parsed.msg.data) {
+                this.onScanReply(ip, parsed.msg.data);
+            }
+        } catch (e) {}
+
         if (this.GoveeDeviceControllers.hasOwnProperty(ip))
         {
             let goveeController = this.GoveeDeviceControllers[ip];
             goveeController.relaySocketMessage(value, this);
-        } else
-        {
-            service.log(`Cannot find controller for ${ip}`);
         }
+        // IP la chua co controller: co the la den vua doi IP -> onScanReply da xu ly.
+        // Khong log spam vi quet ca subnet se nhan nhieu reply tu IP khong lien quan.
 	};
 
     this.getIPv4 = function(address)
@@ -278,6 +297,107 @@ export function DiscoveryService()
         service.log('Restart our socket server');
         this.startSocketServer();
 
+    }
+
+    // ===================================================================
+    //  AUTO-DISCOVERY: tu quet IP theo Govee 'scan' (thay viec nhap IP tay)
+    //  JS trong SignalRGB khong doc duoc bang ARP/MAC cua Windows, nen ta
+    //  quet ca subnet bang lenh Govee 'scan' (unicast toi cong 4001). Den
+    //  tra loi ve cong 4002 (socket nay so huu) kem device-id + sku + ip.
+    //  Khop theo DEVICE-ID -> bam dung den du DHCP doi IP, khong can go tay.
+    // ===================================================================
+    this.autoScan = function()
+    {
+        let now = Date.now();
+        if (!this.lastScanTime) this.lastScanTime = 0;
+        if (now - this.lastScanTime < (this.scanInterval || 20000)) return;
+        this.lastScanTime = now;
+
+        let subnets = this.getScanSubnets();
+        if (!subnets.length) return;
+
+        if (!this.scanSocket)
+        {
+            this.scanSocket = udp.createSocket();
+            this.scanSocket.on('error', function() {});
+        }
+
+        let pkt = { msg: { cmd: 'scan', data: { account_topic: 'reserve' } } };
+        for (let s of subnets)
+        {
+            for (let i = 1; i <= 254; i++)
+            {
+                this.scanSocket.write(pkt, s + '.' + i, 4001);
+            }
+        }
+        // Gui them multicast (neu router/Tailscale cho phep thi cang tot)
+        try { this.scanSocket.write(pkt, '239.255.255.250', 4001); } catch (e) {}
+
+        service.log('Auto-discovery: da quet ' + subnets.join('.0/24, ') + '.0/24');
+    }
+
+    this.getScanSubnets = function()
+    {
+        let subs = {};
+        let add = function(ip) {
+            if (!ip) return;
+            let m = ('' + ip).match(/^(\d+\.\d+\.\d+)\.\d+$/);
+            if (m) subs[m[1]] = true;
+        };
+
+        // Tu cac controller dang chay
+        for (let ip of Object.keys(this.GoveeDeviceControllers)) add(ip);
+
+        // Tu cache IP da luu (de biet subnet ke ca khi chua co controller)
+        try {
+            let cacheJSON = service.getSetting('ipCache', 'cache');
+            if (cacheJSON) {
+                let cache = JSON.parse(cacheJSON);
+                for (let k of Object.keys(cache)) add(cache[k] && cache[k].ip);
+            }
+        } catch (e) {}
+
+        // Subnet cau hinh tay (tuy chon): service setting autoscan/subnet = "192.168.100"
+        let cfg = service.getSetting('autoscan', 'subnet');
+        if (cfg) subs[cfg] = true;
+
+        return Object.keys(subs);
+    }
+
+    this.onScanReply = function(srcIp, data)
+    {
+        let replyIp  = data.ip || srcIp;
+        let deviceId = data.device;
+        let sku      = data.sku;
+        if (!replyIp || !deviceId) return;
+
+        // Da co controller dung IP nay -> relay lo binh thuong, khong can lam gi
+        if (this.GoveeDeviceControllers.hasOwnProperty(replyIp)) return;
+
+        // Tim controller cua DUNG device-id nay nhung dang o IP cu (da chet)
+        let stale = null;
+        for (let ip of Object.keys(this.GoveeDeviceControllers))
+        {
+            let c = this.GoveeDeviceControllers[ip];
+            if (c && c.device && c.device.id && c.device.id === deviceId)
+            {
+                stale = c;
+                break;
+            }
+        }
+
+        // Thiet bi la (chua tung them tay) -> bo qua, KHONG tu doat dieu khien
+        if (!stale) return;
+
+        // Di doi sang IP moi bang dung luong code 'them tay' (forceDiscover) da on dinh,
+        // roi xoa controller o IP cu.
+        let leds  = stale.device.leds;
+        let type  = stale.device.type;
+        let split = stale.device.split;
+        service.log('Auto-discovery: ' + (sku || 'device') + ' ' + deviceId +
+                    ' doi IP ' + stale.id + ' -> ' + replyIp + ', dang cap nhat controller...');
+        this.forceDiscover(replyIp, leds, type, split);
+        this.Delete(stale.id);
     }
 }
 
